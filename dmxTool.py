@@ -1,23 +1,37 @@
-import serial
+import threading
 import time
+
+import serial
 
 # Update this to match your dongle's usual path, or enter a port at startup.
 DEFAULT_DMX_PORT = '/dev/cu.usbserial-B0028467'
+DMX_CHANNEL_COUNT = 512
+DMX_START_CODE = 0
+DMX_REFRESH_INTERVAL = 0.025
+SERIAL_RETRY_INTERVAL = 1.0
 
-def send_dmx(port, values):
-    # DMX512 requires 250kbps, 8 data bits, 2 stop bits
-    with serial.Serial(port, baudrate=250000, stopbits=2) as ser:
-        # Send BREAK (at least 88us low)
-        ser.break_condition = True
-        time.sleep(0.0001) 
-        ser.break_condition = False
-        
-        # Send Mark After Break (MAB)
-        time.sleep(0.00001)
-        
-        # Start code (0x00 for dimmers/levels) + 512 channels
-        packet = bytearray([0]) + bytearray(values)
-        ser.write(packet)
+
+def send_dmx_frame(ser, packet):
+    ser.break_condition = True
+    time.sleep(0.0001)
+    ser.break_condition = False
+    time.sleep(0.00001)
+    ser.write(packet)
+
+
+def sender_loop(port, packet, packet_lock, stop_event):
+    while not stop_event.is_set():
+        try:
+            with serial.Serial(port, baudrate=250000, stopbits=2) as ser:
+                while not stop_event.is_set():
+                    with packet_lock:
+                        frame = bytes(packet)
+                    send_dmx_frame(ser, frame)
+                    time.sleep(DMX_REFRESH_INTERVAL)
+        except serial.SerialException as exc:
+            print(f'Unable to send on {port}: {exc}')
+            if stop_event.wait(SERIAL_RETRY_INTERVAL):
+                return
 
 
 def prompt_port():
@@ -30,6 +44,7 @@ def prompt_port():
         if raw.lower() == 'q':
             return None
         return raw
+
 
 def prompt_channel():
     while True:
@@ -72,36 +87,48 @@ def prompt_value(channel_index):
         print('Value out of range. Enter a decimal number from 0 to 255.')
 
 
+def input_loop(packet, packet_lock, stop_event):
+    while not stop_event.is_set():
+        channel_index = prompt_channel()
+        if channel_index is None:
+            stop_event.set()
+            return
+
+        while not stop_event.is_set():
+            result = prompt_value(channel_index)
+            if result == 'c':
+                break
+            if result == 'q':
+                stop_event.set()
+                return
+
+            with packet_lock:
+                packet[channel_index + 1] = result
+
+            print(f'Staged channel {channel_index + 1} value {result}.')
+
+
 def main():
     port = prompt_port()
     if port is None:
         return
 
-    channels = [0] * 512
+    packet = bytearray(DMX_CHANNEL_COUNT + 1)
+    packet[0] = DMX_START_CODE
+    packet_lock = threading.Lock()
+    stop_event = threading.Event()
+    sender = threading.Thread(
+        target=sender_loop,
+        args=(port, packet, packet_lock, stop_event),
+        daemon=True,
+    )
+    sender.start()
 
-    while True:
-        channel_index = prompt_channel()
-        if channel_index is None:
-            break
-
-        while True:
-            result = prompt_value(channel_index)
-            if result == 'c':
-                break
-            if result == 'q':
-                return
-
-            channels[channel_index] = result
-            try:
-                send_dmx(port, channels)
-            except serial.SerialException as exc:
-                print(f'Unable to send on {port}: {exc}')
-                port = prompt_port()
-                if port is None:
-                    return
-                continue
-
-            print(f'Sent channel {channel_index + 1} value {result} on {port}.')
+    try:
+        input_loop(packet, packet_lock, stop_event)
+    finally:
+        stop_event.set()
+        sender.join()
 
 
 if __name__ == '__main__':
