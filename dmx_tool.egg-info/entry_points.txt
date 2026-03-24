@@ -1,0 +1,2 @@
+[console_scripts]
+dmx-tool = dmxTool:main

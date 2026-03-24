@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmx-tool"
+version = "0.1.0"
+description = "Interactive DMX512 payload sender for an RS-422 USB dongle"
+requires-python = ">=3.10"
+dependencies = [
+    "pyserial>=3.5,<4",
+]
+
+[project.scripts]
+dmx-tool = "dmxTool:main"
+
+[tool.setuptools]
+py-modules = ["dmxTool"]
